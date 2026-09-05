@@ -103,6 +103,45 @@ make_args() {
 	fi
 }
 
+# Host tools (fixdep, kconfig, dtc, and the AOSP dtc that DT overlays need) are
+# compiled by the runner's own gcc, and two things break that on a legacy tree:
+#
+#   * gcc 10 made -fno-common the default, while pre-4.19 host tools still rely
+#     on tentative definitions. dtc fails to link with "multiple definition of
+#     `yylloc'" -- which only shows up once something pulls dtc in, such as
+#     CONFIG_BUILD_ARM64_DT_OVERLAY.
+#   * build_kernel() puts the cross toolchain first on PATH, and some toolchains
+#     ship their own *unprefixed* binutils there (proton-clang does). gcc then
+#     links x86 host binaries with that ld, which fails against a modern glibc
+#     ("unknown type [0x13] section `.relr.dyn'").
+#
+# Pinning both on HOSTCC covers compiling and linking: the host-cmulti rule
+# links with $(HOSTCC) $(HOSTLDFLAGS) and never sees HOSTCFLAGS.
+host_cc_cmd() {
+	local base=${HOSTCC:-gcc} system_ld
+	# Resolve ld on a pristine PATH. build_kernel() has already prepended the
+	# cross toolchain, so a plain `command -v ld` would find the very binary we
+	# are trying to steer gcc away from.
+	system_ld=$(PATH=/usr/local/bin:/usr/bin:/bin command -v ld 2>/dev/null)
+	printf '%s -fcommon -B%s' "$base" "$(dirname "${system_ld:-/usr/bin/ld}")"
+}
+
+# Legacy Android trees hardcode `python2` in their build rules -- this one uses
+# it for scripts/mkdtboimg.py, which is what builds dtbo.img. No current runner
+# image ships python2. Most of those scripts are python3-clean (mkdtboimg.py
+# is: it already imports print_function), so shim it rather than dying with a
+# bare "python2: not found" at the very end of a 40-minute build. A script that
+# genuinely needs python2 now fails with a syntax error naming the file.
+setup_python2_shim() {
+	command -v python2 >/dev/null 2>&1 && return 0
+	command -v python3 >/dev/null 2>&1 || return 0
+	local dir="${WORKSPACE}/py2-shim"
+	mkdir -p "$dir"
+	ln -sf "$(command -v python3)" "${dir}/python2"
+	export PATH="${dir}:${PATH}"
+	info "python2 not found; shimming it to $(python3 --version 2>&1)"
+}
+
 build_kernel() {
 	group "Building kernel"
 	export PATH="${CLANG_PATH:-}:${PATH}"
@@ -123,8 +162,10 @@ build_kernel() {
 		info "using custom manager signature (size=${KSU_EXPECTED_SIZE})"
 	fi
 
-	local cc="clang" args
+	local cc="clang" args host_cc
 	args=$(make_args)
+	host_cc=$(host_cc_cmd)
+	setup_python2_shim
 	if is_true "${ENABLE_CCACHE:-true}" && command -v ccache >/dev/null; then
 		cc="ccache clang"
 		export CCACHE_DIR="${CCACHE_DIR:-${WORKSPACE}/.ccache}"
@@ -133,13 +174,14 @@ build_kernel() {
 
 	cd "$KERNEL_DIR"
 	info "make ${args} ${KERNEL_CONFIG}"
+	info "HOSTCC=${host_cc}"
 	# shellcheck disable=SC2086
-	make -j"$(nproc --all)" CC=clang $args "${KERNEL_CONFIG}" \
+	make -j"$(nproc --all)" CC=clang HOSTCC="$host_cc" $args "${KERNEL_CONFIG}" \
 		|| die "defconfig generation failed"
 
 	info "make ${args}"
 	# shellcheck disable=SC2086
-	make -j"$(nproc --all)" CC="$cc" $args \
+	make -j"$(nproc --all)" CC="$cc" HOSTCC="$host_cc" $args \
 		|| die "kernel build failed"
 
 	endgroup
