@@ -11,6 +11,35 @@ ARCH=${ARCH:-arm64}
 BOOT_OUT="${KERNEL_DIR}/out/arch/${ARCH}/boot"
 AK3="${WORKSPACE}/AnyKernel3"
 
+# Upstream's anykernel.sh ships a Galaxy Nexus demo between dump_boot and
+# write_boot: it patches init.rc, init.tuna.rc and fstab.tuna. Those files do
+# not exist on other devices, and append_file *creates* what it cannot find --
+# so flashing the stock template writes two stray files into the ramdisk of
+# whatever device it lands on. A plain kernel swap only needs unpack + repack.
+strip_ak3_demo_patches() {
+	local f="${AK3}/anykernel.sh"
+	grep -q '^dump_boot;' "$f" && grep -q '^write_boot;' "$f" || {
+		warn "anykernel.sh has no dump_boot/write_boot pair; leaving it alone"
+		return 0
+	}
+	awk '
+		/^dump_boot;/  { print; skip = 1; next }
+		/^write_boot;/ { skip = 0 }
+		!skip          { print }
+	' "$f" > "${f}.new" && mv -f "${f}.new" "$f"
+	ok "removed the AnyKernel3 demo ramdisk patches"
+}
+
+# The zip otherwise advertises itself as "ExampleKernel by osm0sis", which is
+# what the installer prints while flashing.
+set_ak3_kernel_string() {
+	local label="${DEVICE:-kernel} ${KERNEL_RELEASE:-}"
+	[ -n "${KSU_NAME:-}" ] && label="${label} + ${KSU_NAME} ${KSU_VERSION_LABEL:-}"
+	# Collapse runs of whitespace left by any empty component.
+	label=$(printf '%s' "$label" | tr -s ' ')
+	sed -i "s|^kernel.string=.*|kernel.string=${label}|" "${AK3}/anykernel.sh"
+}
+
 make_anykernel3() {
 	group "Building AnyKernel3 package"
 	rm -rf "$AK3"
@@ -39,6 +68,8 @@ make_anykernel3() {
 		sed -i 's/do.devicecheck=1/do.devicecheck=0/g' "${AK3}/anykernel.sh"
 		sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' "${AK3}/anykernel.sh"
 		sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' "${AK3}/anykernel.sh"
+		strip_ak3_demo_patches
+		set_ak3_kernel_string
 	fi
 
 	cp "${BOOT_OUT}/${KERNEL_IMAGE_NAME}" "${AK3}/" \
