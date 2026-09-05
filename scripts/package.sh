@@ -77,6 +77,18 @@ make_anykernel3() {
 	if is_true "${CHECK_DTBO_IS_OK:-false}"; then
 		cp "${BOOT_OUT}/dtbo.img" "${AK3}/"
 	fi
+
+	# The kernel, the base device tree and the dtbo overlay are built together
+	# and only work together. AnyKernel3 replaces the dtb inside the boot image
+	# only when a file literally named "dtb" sits in the zip root (ak3-core.sh
+	# looks for $AKHOME/dtb); without it the repack keeps the *stock* dtb while
+	# the freshly built overlay still lands in the dtbo partition. The bootloader
+	# then applies a new overlay onto an old base, which on this class of device
+	# means a boot failure into fastboot rather than a visible error.
+	if [ -f "${BOOT_OUT}/dtb" ]; then
+		cp "${BOOT_OUT}/dtb" "${AK3}/"
+		ok "included dtb ($(du -h "${BOOT_OUT}/dtb" | cut -f1)) so it matches the flashed dtbo"
+	fi
 	rm -rf "${AK3}/.git" "${AK3}/.github" "${AK3}/README.md"
 
 	ok "AnyKernel3 package assembled"
