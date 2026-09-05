@@ -123,6 +123,22 @@ host_cc_cmd() {
 	printf '%s -fcommon -B%s' "$base" "$system_bin"
 }
 
+# Legacy Android trees hardcode `python2` in their build rules -- this one uses
+# it for scripts/mkdtboimg.py, which is what builds dtbo.img. No current runner
+# image ships python2. Most of those scripts are python3-clean (mkdtboimg.py
+# is: it already imports print_function), so shim it rather than dying with a
+# bare "python2: not found" at the very end of a 40-minute build. A script that
+# genuinely needs python2 now fails with a syntax error naming the file.
+setup_python2_shim() {
+	command -v python2 >/dev/null 2>&1 && return 0
+	command -v python3 >/dev/null 2>&1 || return 0
+	local dir="${WORKSPACE}/py2-shim"
+	mkdir -p "$dir"
+	ln -sf "$(command -v python3)" "${dir}/python2"
+	export PATH="${dir}:${PATH}"
+	info "python2 not found; shimming it to $(python3 --version 2>&1)"
+}
+
 build_kernel() {
 	group "Building kernel"
 	export PATH="${CLANG_PATH:-}:${PATH}"
@@ -146,6 +162,7 @@ build_kernel() {
 	local cc="clang" args host_cc
 	args=$(make_args)
 	host_cc=$(host_cc_cmd)
+	setup_python2_shim
 	if is_true "${ENABLE_CCACHE:-true}" && command -v ccache >/dev/null; then
 		cc="ccache clang"
 		export CCACHE_DIR="${CCACHE_DIR:-${WORKSPACE}/.ccache}"
