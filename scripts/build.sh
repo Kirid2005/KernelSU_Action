@@ -103,6 +103,26 @@ make_args() {
 	fi
 }
 
+# Host tools (fixdep, kconfig, dtc, and the AOSP dtc that DT overlays need) are
+# compiled by the runner's own gcc, and two things break that on a legacy tree:
+#
+#   * gcc 10 made -fno-common the default, while pre-4.19 host tools still rely
+#     on tentative definitions. dtc fails to link with "multiple definition of
+#     `yylloc'" -- which only shows up once something pulls dtc in, such as
+#     CONFIG_BUILD_ARM64_DT_OVERLAY.
+#   * build_kernel() puts the cross toolchain first on PATH, and some toolchains
+#     ship their own *unprefixed* binutils there (proton-clang does). gcc then
+#     links x86 host binaries with that ld, which fails against a modern glibc
+#     ("unknown type [0x13] section `.relr.dyn'").
+#
+# Pinning both on HOSTCC covers compiling and linking: the host-cmulti rule
+# links with $(HOSTCC) $(HOSTLDFLAGS) and never sees HOSTCFLAGS.
+host_cc_cmd() {
+	local base=${HOSTCC:-gcc} system_bin
+	system_bin=$(dirname "$(command -v ld 2>/dev/null || echo /usr/bin/ld)")
+	printf '%s -fcommon -B%s' "$base" "$system_bin"
+}
+
 build_kernel() {
 	group "Building kernel"
 	export PATH="${CLANG_PATH:-}:${PATH}"
@@ -123,8 +143,9 @@ build_kernel() {
 		info "using custom manager signature (size=${KSU_EXPECTED_SIZE})"
 	fi
 
-	local cc="clang" args
+	local cc="clang" args host_cc
 	args=$(make_args)
+	host_cc=$(host_cc_cmd)
 	if is_true "${ENABLE_CCACHE:-true}" && command -v ccache >/dev/null; then
 		cc="ccache clang"
 		export CCACHE_DIR="${CCACHE_DIR:-${WORKSPACE}/.ccache}"
@@ -133,13 +154,14 @@ build_kernel() {
 
 	cd "$KERNEL_DIR"
 	info "make ${args} ${KERNEL_CONFIG}"
+	info "HOSTCC=${host_cc}"
 	# shellcheck disable=SC2086
-	make -j"$(nproc --all)" CC=clang $args "${KERNEL_CONFIG}" \
+	make -j"$(nproc --all)" CC=clang HOSTCC="$host_cc" $args "${KERNEL_CONFIG}" \
 		|| die "defconfig generation failed"
 
 	info "make ${args}"
 	# shellcheck disable=SC2086
-	make -j"$(nproc --all)" CC="$cc" $args \
+	make -j"$(nproc --all)" CC="$cc" HOSTCC="$host_cc" $args \
 		|| die "kernel build failed"
 
 	endgroup
