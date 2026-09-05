@@ -118,9 +118,12 @@ make_args() {
 # Pinning both on HOSTCC covers compiling and linking: the host-cmulti rule
 # links with $(HOSTCC) $(HOSTLDFLAGS) and never sees HOSTCFLAGS.
 host_cc_cmd() {
-	local base=${HOSTCC:-gcc} system_bin
-	system_bin=$(dirname "$(command -v ld 2>/dev/null || echo /usr/bin/ld)")
-	printf '%s -fcommon -B%s' "$base" "$system_bin"
+	local base=${HOSTCC:-gcc} system_ld
+	# Resolve ld on a pristine PATH. build_kernel() has already prepended the
+	# cross toolchain, so a plain `command -v ld` would find the very binary we
+	# are trying to steer gcc away from.
+	system_ld=$(PATH=/usr/local/bin:/usr/bin:/bin command -v ld 2>/dev/null)
+	printf '%s -fcommon -B%s' "$base" "$(dirname "${system_ld:-/usr/bin/ld}")"
 }
 
 # Legacy Android trees hardcode `python2` in their build rules -- this one uses
